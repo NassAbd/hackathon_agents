@@ -1,8 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { ContextGraph } from "@/components/ContextGraph";
+import { ContextStory } from "@/components/ContextStory";
 import { graphFromContext } from "@/lib/live-context";
-import type { GhostState } from "@/lib/ghost-state";
 import { ObservationSchema, type Observation } from "@/lib/browser/contracts";
 import {
   BrowserSessionSchema,
@@ -14,18 +13,25 @@ export default function BrowserPage() {
   const [state, setState] = useState<BrowserSession>(newBrowserSession);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [insertState, setInsertState] = useState<
+    "idle" | "inserting" | "blocked" | "inserted" | "error"
+  >("idle");
+  const [insertMessage, setInsertMessage] = useState("");
   const session = useRef("");
   const sequence = useRef(0);
   const queue = useRef<Observation[]>([]);
   const processing = useRef(false);
   const parentOrigin = useRef("");
   const mounted = useRef(true);
+  const draftInsertionRef = useRef("");
+  const insertionRequest = useRef("");
+  const currentView = useRef<Observation | null>(null);
   const sendRef = useRef<
     (
       mode: "observe" | "draft" | "reset",
       observation?: Observation,
-    ) => Promise<void>
-  >(async () => {});
+    ) => Promise<BrowserSession | undefined>
+  >(async () => undefined);
   sendRef.current = async (mode, observation) => {
     setBusy(true);
     try {
@@ -44,7 +50,16 @@ export default function BrowserPage() {
       if (mounted.current) {
         setState(result);
         setError("");
+        if (mode === "draft" || mode === "reset") {
+          setInsertState("idle");
+          setInsertMessage("");
+        }
+        if (!result.draft) {
+          setInsertState("idle");
+          setInsertMessage("");
+        }
       }
+      return result;
     } catch {
       if (mounted.current)
         setError(
@@ -60,17 +75,37 @@ export default function BrowserPage() {
     async function drain() {
       if (processing.current) return;
       processing.current = true;
-      while (queue.current.length && mounted.current)
-        await sendRef.current("observe", queue.current.shift());
+      while (queue.current.length && mounted.current) {
+        const result = await sendRef.current("observe", queue.current.shift());
+        // Finish queued navigation before acting; the backend still owns all verification.
+        if (!queue.current.length && result?.boundary && !result.draft)
+          await sendRef.current("draft");
+      }
       processing.current = false;
     }
     function receive(event: MessageEvent) {
       if (
         event.source !== window.parent ||
-        !/^chrome-extension:\/\/[a-p]{32}$/.test(event.origin) ||
-        event.data?.type !== "observation"
+        !/^chrome-extension:\/\/[a-p]{32}$/.test(event.origin)
       )
         return;
+      if (event.data?.type === "ghost-draft-result") {
+        if (event.data.requestId !== insertionRequest.current) return;
+        if (event.data.ok) {
+          setInsertState("inserted");
+          setInsertMessage("");
+        } else if (event.data.reason === "composer-has-content") {
+          setInsertState("blocked");
+          setInsertMessage(
+            "Insertion blocked: Gmail already contains text. Your draft was left unchanged.",
+          );
+        } else {
+          setInsertState("error");
+          setInsertMessage(event.data.reason || "Insert blocked");
+        }
+        return;
+      }
+      if (event.data?.type !== "observation") return;
       if (parentOrigin.current && parentOrigin.current !== event.origin) return;
       parentOrigin.current = event.origin;
       const parsed = ObservationSchema.safeParse({
@@ -78,6 +113,7 @@ export default function BrowserPage() {
         sequence: ++sequence.current,
       });
       if (!parsed.success) return;
+      currentView.current = parsed.data;
       const last = queue.current.at(-1);
       if (
         last?.objectId === parsed.data.objectId &&
@@ -107,15 +143,66 @@ export default function BrowserPage() {
           evidenceIds: [],
         },
       };
-  const graphState: GhostState = {
-    ...graph,
-    events: state.events,
-    visited: [...new Set(state.sources.map((s) => s.app!).filter(Boolean))],
-    currentApp:
-      state.sources.find((s) => s.id === state.currentSource)?.app ?? "email",
-    returned: state.leftEmail,
-    boundary: state.boundary,
-  };
+  const draftText =
+    state.draft?.sentences.map((s) => s.text).join("\n\n") ?? "";
+  const citedIds = new Set(
+    state.draft?.sentences.flatMap((s) => s.factIds) ?? [],
+  );
+  const citedFacts =
+    state.context?.facts.filter((f) => citedIds.has(f.id)) ?? [];
+  const groundedFactCount = citedIds.size;
+  const sourceCount = new Set(
+    citedFacts.flatMap((f) => f.evidence.map((e) => e.sourceId)),
+  ).size;
+  useEffect(() => {
+    if (!state.draft) {
+      draftInsertionRef.current = "";
+      return;
+    }
+    // A fallback acknowledgement or a failed verification must never alter Gmail.
+    if (
+      !state.boundary ||
+      state.origin !== "live" ||
+      state.draftOrigin !== "live" ||
+      !draftText ||
+      busy
+    )
+      return;
+    const source = state.sources.find((s) => s.id === state.emailSource);
+    const view = currentView.current;
+    if (
+      !source?.object ||
+      view?.app !== "email" ||
+      view.action !== "REPLY" ||
+      view.objectId !== source.object.id ||
+      queue.current.length
+    )
+      return;
+    const key = `${source.id}:${draftText}`;
+    if (draftInsertionRef.current === key || !parentOrigin.current) return;
+    draftInsertionRef.current = key;
+    insertionRequest.current = crypto.randomUUID();
+    setInsertState("inserting");
+    window.parent.postMessage(
+      {
+        type: "ghost-insert-draft",
+        text: draftText,
+        objectId: source.object.id,
+        requestId: insertionRequest.current,
+      },
+      parentOrigin.current,
+    );
+  }, [state, draftText, busy]);
+  useEffect(() => {
+    if (insertState !== "inserting") return;
+    const timer = setTimeout(() => {
+      setInsertState("error");
+      setInsertMessage(
+        "Gmail did not confirm insertion. Check the composer before retrying.",
+      );
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, [insertState]);
   return (
     <main
       style={{
@@ -171,75 +258,54 @@ export default function BrowserPage() {
         <h2 style={{ fontSize: 20 }}>{graph.intent.label}</h2>
         <strong>{Math.round(graph.intent.confidence * 100)}% confidence</strong>
       </section>
-      <ContextGraph
-        state={graphState}
-        onSource={(app) => {
-          const source = state.sources.find((s) => s.app === app);
-          if (source) window.open(source.url, "_blank", "noopener,noreferrer");
-        }}
-      />
+      <ContextStory context={state.context} sources={state.verifiedSources} />
       {state.boundary && (
-        <section
-          style={{
-            padding: 16,
-            background: "#eaf0df",
-            borderRadius: 14,
-            marginTop: 20,
-          }}
-        >
-          <h2>Here’s what you learned since opening this email.</h2>
-          {graph.facts
-            .filter((f) => f.customerSafe)
-            .map((f) => (
-              <p key={f.id}>
-                {f.text} <small>— {f.source}</small>
+        <section className="browser-draft-status" aria-live="polite">
+          {insertState === "inserted" ? (
+            <>
+              <strong>✓ Draft placed in Gmail</strong>
+              <p>
+                {groundedFactCount} grounded claims · {sourceCount} sources
               </p>
-            ))}
-          <button
-            disabled={busy}
-            onClick={() => void sendRef.current("draft")}
-            style={{
-              padding: "12px 20px",
-              borderRadius: 20,
-              background: "#26372b",
-              color: "white",
-            }}
-          >
-            Draft reply
-          </button>
-        </section>
-      )}
-      {state.draft && (
-        <section>
-          <h2>
-            Draft reply ·{" "}
-            {state.draftOrigin === "live"
-              ? "Live AI"
-              : "Deterministic fallback"}
-          </h2>
-          <textarea
-            aria-label="Grounded reply draft"
-            readOnly
-            rows={14}
-            value={state.draft.sentences.map((s) => s.text).join("\n\n")}
-            style={{ width: "100%", padding: 14, font: "inherit" }}
-          />
-          <p>Review and copy into Gmail. GHOST never sends email.</p>
-          {state.draft.sentences
-            .flatMap((s) => s.factIds)
-            .filter((id, i, all) => all.indexOf(id) === i)
-            .map((id) => (
-              <p key={id}>
-                <small>
-                  {state.context?.facts.find((f) => f.id === id)?.text}
-                </small>
+              <small>No internal data disclosed</small>
+            </>
+          ) : insertState === "blocked" || insertState === "error" ? (
+            <p role="alert">{insertMessage}</p>
+          ) : busy ? (
+            <>
+              <strong>Preparing your grounded reply…</strong>
+              <p>
+                Checking claims and source evidence before placing it in Gmail.
               </p>
-            ))}
+            </>
+          ) : insertState === "inserting" ? (
+            <strong>Verified · placing draft in Gmail…</strong>
+          ) : state.draftOrigin === "fallback" ? (
+            <p>Draft could not be verified. Gmail was left unchanged.</p>
+          ) : error ? (
+            <p>Draft generation stopped. Gmail was left unchanged.</p>
+          ) : (
+            <p>Context restored. Preparing your reply…</p>
+          )}
         </section>
       )}
       {state.context && (
         <details style={{ marginTop: 18 }}>
           <summary>Grounded facts and provenance</summary>
+          {state.draft && (
+            <details>
+              <summary>Verified draft and claim references</summary>
+              {state.draft.sentences.map((sentence, i) => (
+                <p key={i}>
+                  {sentence.text}
+                  <small>
+                    {" "}
+                    · {sentence.factIds.join(", ") || "Non-factual courtesy"}
+                  </small>
+                </p>
+              ))}
+            </details>
+          )}
           {state.context.facts.map((fact) => (
             <article key={fact.id} style={{ padding: "10px 0" }}>
               <strong>{fact.text}</strong>
@@ -317,6 +383,8 @@ export default function BrowserPage() {
         disabled={busy}
         onClick={() => {
           queue.current = [];
+          draftInsertionRef.current = "";
+          insertionRequest.current = "";
           void sendRef.current("reset");
         }}
         style={{ marginTop: 24 }}

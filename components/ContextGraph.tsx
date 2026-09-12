@@ -10,10 +10,15 @@ import {
 } from "@xyflow/react";
 import { type GhostState } from "@/lib/ghost-state";
 import { appNames, type AppId } from "@/lib/fixtures";
-type ContextNodeData = { label: string; detail: string; app: AppId };
+type ContextNodeData = {
+  label: string;
+  detail: string;
+  app: AppId;
+  role?: "primary" | "supporting";
+};
 function ContextNode({ data }: NodeProps<Node<ContextNodeData>>) {
   return (
-    <div className={`context-node ${data.app}`}>
+    <div className={`context-node ${data.app} ${data.role ?? ""}`}>
       <Handle type="target" position={Position.Top} />
       <span>{data.detail}</span>
       <strong title={data.label}>{data.label}</strong>
@@ -68,9 +73,14 @@ export function ContextGraph({
             id: n.id,
             type: "context",
             position: { x: n.x, y: n.y },
-            data: { label: n.label, detail: n.detail, app: n.app },
+            data: {
+              label: n.label,
+              detail: n.detail,
+              app: n.app,
+              role: n.role,
+            },
             ariaLabel: `${n.label}, source ${appNames[n.app]}`,
-            style: { width: 118 },
+            style: { width: 182 },
           }))}
           edges={state.edges.map((e) => ({
             ...e,

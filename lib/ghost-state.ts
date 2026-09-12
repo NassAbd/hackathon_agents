@@ -8,6 +8,7 @@ export type GhostNode = {
   x: number;
   y: number;
   factIds: string[];
+  role?: "primary" | "supporting";
 };
 export type GhostEdge = {
   id: string;

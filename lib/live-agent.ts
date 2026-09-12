@@ -47,11 +47,12 @@ export function openAIInvoke(signal: AbortSignal, logOutput = true): Invoke {
       ? [
           ...new Set(
             observed.flatMap((source) =>
-              source.content.split(/(?<=[.!?])\s+|\n+/).flatMap((line) => {
+                source.content.split(/(?<=[.!?])\s+|\n+/).flatMap((line) => {
                 const chunks: string[] = [];
-                for (let offset = 0; offset < line.length; offset += 1200) {
-                  const chunk = line.slice(offset, offset + 1200).trim();
+                for (let offset = 0; offset < line.length; offset += 900) {
+                  const chunk = line.slice(offset, offset + 900).trim();
                   if (chunk.length >= 3) chunks.push(chunk);
+                  if (chunks.length >= 8) break;
                 }
                 return chunks;
               }),

@@ -130,17 +130,132 @@ export function graphFromContext(
     if (source?.app) return source.app;
     return id === "slack" || id === "github" || id === "crm" ? id : "email";
   };
-  return {
-    nodes: context.entities.map((entity, index) => ({
-      id: entity.id,
-      label: entity.label,
-      detail: entity.type,
+  const factByEntity = new Map<string, number>();
+  for (const fact of context.facts)
+    for (const id of fact.entityIds) factByEntity.set(id, (factByEntity.get(id) ?? 0) + 1);
+
+  const outgoing = new Map<string, string[]>();
+  const incoming = new Map<string, string[]>();
+  for (const edge of context.relationships) {
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
+    incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge.source]);
+  }
+
+  const scoreNode = (entity: LiveContext["entities"][number]) => {
+    const value = `${entity.label} ${entity.type}`.toLowerCase();
+    let score = (incoming.get(entity.id)?.length ?? 0) * 0.35;
+    score += (outgoing.get(entity.id)?.length ?? 0) * 0.8;
+    score += (factByEntity.get(entity.id) ?? 0) * 0.45;
+    const keywords = [
+      "customer",
+      "incident",
+      "issue",
+      "failure",
+      "cause",
+      "outcome",
+      "status",
+      "resolved",
+      "fix",
+      "routing",
+      "renewal",
+      "region",
+      "email",
+      "payment",
+    ];
+    if (keywords.some((word) => value.includes(word))) score += 1.2;
+    if (/^acme$/i.test(entity.label.trim())) score += 1.1;
+    if (/customer|invoice|company|account/.test(value)) score += 0.7;
+    return score;
+  };
+
+  const entities = context.entities
+    .map((entity) => ({
+      ...entity,
+      score: scoreNode(entity),
       app: appFor(entity.evidence[0].sourceId),
-      x: (index % 3) * 140 + 4,
-      y: Math.floor(index / 3) * 75 + 10,
+    }))
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+
+  const primaryCount = Math.min(5, Math.max(3, Math.ceil(entities.length / 2)));
+  const primarySet = new Set(entities.slice(0, primaryCount).map((entry) => entry.id));
+  const anchor = entities.find((entry) =>
+    /customer|acme|email|company|account/.test(
+      `${entry.label} ${entry.type}`.toLowerCase(),
+    ),
+  )?.id;
+
+  const layerOf = new Map<string, number>();
+  const queue: string[] = [];
+  let head = 0;
+  if (anchor) {
+    layerOf.set(anchor, 0);
+    queue.push(anchor);
+  }
+
+  while (head < queue.length) {
+    const node = queue[head] ?? "";
+    head += 1;
+    const current = layerOf.get(node);
+    if (current === undefined) continue;
+    for (const next of outgoing.get(node) ?? []) {
+      const nextDepth = current + 1;
+      if (layerOf.get(next) !== undefined) continue;
+      layerOf.set(next, nextDepth);
+      queue.push(next);
+    }
+  }
+
+  for (const entity of context.entities) {
+    if (!layerOf.has(entity.id)) {
+      const nearestPrimary = [...incoming.get(entity.id) ?? []].find((source) =>
+        primarySet.has(source),
+      );
+      const fromIncoming = nearestPrimary
+        ? (layerOf.get(nearestPrimary) ?? 1) + 1
+        : primarySet.has(entity.id)
+          ? 0
+          : 2;
+      layerOf.set(entity.id, Math.max(1, fromIncoming));
+    }
+  }
+
+  const columns = new Map<number, string[]>();
+  for (const entity of entities) {
+    const column = layerOf.get(entity.id) ?? 0;
+    const list = columns.get(column) ?? [];
+    list.push(entity.id);
+    columns.set(column, list);
+  }
+  const sortedEntries = context.entities.map((entity) => {
+    const isPrimary = primarySet.has(entity.id);
+    const col = layerOf.get(entity.id) ?? 0;
+    const peers = columns.get(col) ?? [];
+    const rank = peers.indexOf(entity.id);
+    return {
+      ...entity,
+      app: appFor(entity.evidence[0].sourceId),
       factIds: context.facts
         .filter((f) => f.entityIds.includes(entity.id))
         .map((f) => f.id),
+      isPrimary,
+      x: col * 250 + 30,
+      y: rank * 90 + (isPrimary ? 10 : 56),
+      detail: isPrimary
+        ? `PRIMARY · ${entity.type}`
+        : `Supporting · ${entity.type}`,
+    };
+  });
+
+  return {
+    nodes: sortedEntries.map((entity) => ({
+      id: entity.id,
+      label: entity.label,
+      detail: entity.detail,
+      app: entity.app,
+      x: entity.x,
+      y: entity.y,
+      factIds: entity.factIds,
+      role: entity.isPrimary ? "primary" : "supporting",
     })),
     edges: context.relationships.map((r) => ({
       id: r.id,

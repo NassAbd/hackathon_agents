@@ -1,11 +1,13 @@
 /* global chrome */
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 const panels = new Map();
+let lastWindowId = null;
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== "ghost-panel") return;
   port.onMessage.addListener((message) => {
     if (message.type === "subscribe" && Number.isInteger(message.windowId)) {
       panels.set(message.windowId, port);
+      lastWindowId = message.windowId;
       chrome.tabs
         .query({ active: true, windowId: message.windowId })
         .then(([tab]) => {
@@ -40,6 +42,46 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     type: "observation",
     observation: { ...message.observation, url: message.observation.url },
   });
+});
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "insert-draft") return;
+  if (
+    sender.url !== chrome.runtime.getURL("panel.html") ||
+    typeof message.objectId !== "string"
+  ) {
+    sendResponse({ ok: false, reason: "Invalid insertion request" });
+    return;
+  }
+  const targetWindowId = Number.isInteger(message.windowId)
+    ? message.windowId
+    : lastWindowId;
+  if (!Number.isInteger(targetWindowId)) {
+    sendResponse({ ok: false, reason: "Window not found" });
+    return;
+  }
+  chrome.tabs
+    .query({ active: true, windowId: targetWindowId })
+    .then(async ([tab]) => {
+      if (!tab?.id) return { ok: false, reason: "No active Gmail tab" };
+      // The content script checks the exact thread, visible Reply, and empty composer atomically.
+      return await chrome.tabs.sendMessage(tab.id, {
+        type: "insertDraft",
+        text: message.text,
+        objectId: message.objectId,
+      });
+    })
+    .then((result) =>
+      sendResponse(
+        result ?? { ok: false, reason: "Gmail did not confirm insertion" },
+      ),
+    )
+    .catch(() =>
+      sendResponse({
+        ok: false,
+        reason: "Gmail content script is unavailable; reload the tab",
+      }),
+    );
+  return true;
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   chrome.tabs.sendMessage(tabId, { type: "observe" }).catch(() => {});
