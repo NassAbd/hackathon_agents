@@ -1,0 +1,65 @@
+0:00–0:08
+
+"AI assistants usually make you stop working
+and explain your context.
+
+GHOST does the opposite."
+
+0:08–0:15
+
+"This customer is reporting payment failures
+and considering their renewal."
+
+[Email visible]
+
+0:15–0:50
+
+"I investigate like I normally would."
+
+Slack
+→ graph grows
+
+GitHub
+→ graph grows
+
+CRM
+→ graph grows
+
+"While I work, GHOST follows the context
+that survives between applications."
+
+0:50–1:05
+
+[graph reaches final state]
+
+"It now understands that I'm resolving
+ACME's escalation and protecting the renewal.
+
+I never prompted it."
+
+1:05–1:25
+
+Return Email
+→ Reply
+
+"GHOST recognizes that I've returned
+to act on what I learned."
+
+Context restored.
+
+Draft Reply.
+
+1:25–1:40
+
+"Every application understands what happens
+inside it.
+
+GHOST understands why you move between them."
+
+1:40–1:50
+
+"The prompt isn't what you type.
+
+The prompt is what you do."
+
+[GHOST logo / graph]
