@@ -1,0 +1,120 @@
+{
+  "verifiedAt": "2026-09-12T11:25:38.630Z",
+  "scope": "Synthetic email and saved public GitHub issue fixture; no private Gmail read",
+  "before": {
+    "entities": [
+      "Payment failures in Europe",
+      "Europe",
+      "EU payment failures after deployment (Open)",
+      "ACME",
+      "Routing configuration error",
+      "Fix deployed at 14:32 UTC",
+      "Payment error rates have returned to normal"
+    ],
+    "intent": {
+      "label": "Explain current resolution and status of EU payment failures",
+      "confidence": 0.95,
+      "evidenceIds": [
+        "f557664768_f_907ab8f817ad7883",
+        "f557664768_f_b681e99c6dc9ff9e"
+      ]
+    },
+    "draft": {
+      "sentences": [
+        {
+          "text": "Payment failures were occurring in Europe, particularly affecting the EU region after the latest deployment.",
+          "factIds": [
+            "2e444dea07_f_deae2d4d75857c10",
+            "f557664768_f_c8cfedff94072c31"
+          ]
+        },
+        {
+          "text": "The root cause was identified as a routing configuration error.",
+          "factIds": [
+            "f557664768_f_990b62ca490048fd"
+          ]
+        },
+        {
+          "text": "A fix was deployed at 14:32 UTC to address the issue.",
+          "factIds": [
+            "f557664768_f_907ab8f817ad7883"
+          ]
+        },
+        {
+          "text": "After the fix deployment, payment error rates have returned to normal.",
+          "factIds": [
+            "f557664768_f_b681e99c6dc9ff9e"
+          ]
+        },
+        {
+          "text": "Thank you for your patience while this matter was addressed.",
+          "factIds": []
+        }
+      ]
+    },
+    "timings": {
+      "DOM extraction": 0,
+      "model extraction": 9765,
+      "verification": 2089,
+      "graph merge": 1,
+      "intent update": 0,
+      "total request duration": 11856
+    }
+  },
+  "after": {
+    "entities": [
+      "Payment failures in Europe",
+      "Europe",
+      "ACME",
+      "Incident #4821 (Open)",
+      "EU payment failures ongoing",
+      "Proposed fix rolled back",
+      "No confirmed resolution time"
+    ],
+    "intent": {
+      "label": "Explain ongoing status and uncertain resolution time of EU payment failures incident",
+      "confidence": 0.9,
+      "evidenceIds": [
+        "f557664768_f_e4ab4e3b1493d5a9",
+        "f557664768_f_608cdb524384f5ee"
+      ]
+    },
+    "draft": {
+      "sentences": [
+        {
+          "text": "Payment failures are occurring in Europe as part of incident #4821.",
+          "factIds": [
+            "2e444dea07_f_deae2d4d75857c10",
+            "f557664768_f_3f524cdc07a11d7c",
+            "f557664768_f_e4ab4e3b1493d5a9"
+          ]
+        },
+        {
+          "text": "The proposed fix for this incident was rolled back and has not resolved the issue.",
+          "factIds": [
+            "f557664768_f_625e0f649de27800"
+          ]
+        },
+        {
+          "text": "There is no confirmed resolution time for the payment failures at this moment.",
+          "factIds": [
+            "f557664768_f_608cdb524384f5ee"
+          ]
+        },
+        {
+          "text": "Thank you for your inquiry regarding the current status of the payment failures.",
+          "factIds": [
+            "2e444dea07_f_8e2de3335023201f"
+          ]
+        }
+      ]
+    },
+    "timings": {
+      "DOM extraction": 0,
+      "total request duration": 3320,
+      "draft generation": 2296,
+      "verification": 1024
+    }
+  },
+  "result": "Passed: graph, intent and grounded draft adapt to changed incident status"
+}

@@ -1,16 +1,19 @@
-👻 Built GHOST at Agents, Everywhere.
+👻 Built GHOST at Agents, Everywhere — the global hackathon by OpenAI × AI Tinkerers.
 
 Every app understands what happens inside it. GHOST understands why you move between them.
 
-GHOST follows context across your workflow, builds a live graph of what you're doing, infers your intent, and brings that context back when you're ready to act — without requiring a prompt.
+As you move across your workflow, GHOST follows the context you encounter, builds a live graph of entities and relationships, and progressively infers what you're trying to accomplish.
 
-The prompt isn't what you type. The prompt is what you do.
+When you're ready to act, that context is already there — grounded, connected, and ready to use.
 
-Built with OpenAI Agents SDK + Next.js + React Flow.
+No prompt required.
 
-[VIDEO]
-[GITHUB]
+The prompt isn't what you type.
+The prompt is what you do.
 
-#AgentsEverywhere #AITinkerers
+Built with OpenAI Agents SDK, Next.js, React Flow — and a lot of iteration in a few hours.
 
-[partner tags]
+🎥 Demo: [VIDEO]
+💻 GitHub: [GITHUB]
+
+#AgentsEverywhere #AITinkerers #AIAgents #OpenAI

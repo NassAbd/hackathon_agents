@@ -1,11 +1,10 @@
 import { z } from "zod";
-import { apps } from "./fixtures";
 import { RequestSchema, AgentOutputSchema } from "./schemas";
 const id = z.string().min(1).max(80);
 const refs = z.array(id).min(1).max(24);
 export const EvidenceSchema = z
   .object({
-    sourceId: z.enum(apps),
+    sourceId: z.string().min(1).max(500),
     quote: z.string().min(3).max(1600),
   })
   .strict();
@@ -111,3 +110,32 @@ export const ApiResponseSchema = z.discriminatedUnion("mode", [
     .strict(),
 ]);
 export type ApiResponse = z.infer<typeof ApiResponseSchema>;
+
+export function liveContextSchemaForSources(
+  sourceIds: string[],
+  quoteChoices?: string[],
+) {
+  if (!sourceIds.length) throw new Error("No observed sources");
+  const evidence = EvidenceSchema.extend({
+    sourceId: z.enum(sourceIds),
+    ...(quoteChoices?.length ? { quote: z.enum(quoteChoices) } : {}),
+  });
+  return LiveContextSchema.extend({
+    entities: z
+      .array(
+        LiveContextSchema.shape.entities.element.extend({
+          evidence: z.array(evidence).min(1).max(4),
+        }),
+      )
+      .min(1)
+      .max(16),
+    facts: z
+      .array(
+        LiveContextSchema.shape.facts.element.extend({
+          evidence: z.array(evidence).min(1).max(4),
+        }),
+      )
+      .min(1)
+      .max(24),
+  });
+}

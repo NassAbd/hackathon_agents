@@ -8,7 +8,9 @@ import type { AppId } from "./fixtures";
 import type { GhostState } from "./ghost-state";
 export class GroundingError extends Error {}
 export type Source = {
-  id: AppId;
+  id: string;
+  app?: AppId;
+  object?: { kind: "gmail-thread" | "github-issue"; id: string };
   title: string;
   url: string;
   content: string;
@@ -123,12 +125,17 @@ export function graphFromContext(
   context: LiveContext,
   sources: Source[],
 ): Pick<GhostState, "nodes" | "edges" | "facts" | "intent"> {
+  const appFor = (id: string): AppId => {
+    const source = sources.find((s) => s.id === id);
+    if (source?.app) return source.app;
+    return id === "slack" || id === "github" || id === "crm" ? id : "email";
+  };
   return {
     nodes: context.entities.map((entity, index) => ({
       id: entity.id,
       label: entity.label,
       detail: entity.type,
-      app: entity.evidence[0].sourceId,
+      app: appFor(entity.evidence[0].sourceId),
       x: (index % 3) * 140 + 4,
       y: Math.floor(index / 3) * 75 + 10,
       factIds: context.facts
@@ -144,7 +151,7 @@ export function graphFromContext(
     facts: context.facts.map((f) => ({
       id: f.id,
       text: f.text,
-      app: f.evidence[0].sourceId,
+      app: appFor(f.evidence[0].sourceId),
       customerSafe: f.customerSafe,
       source:
         sources.find((s) => s.id === f.evidence[0].sourceId)?.title ??
@@ -152,4 +159,49 @@ export function graphFromContext(
     })),
     intent: context.intent,
   };
+}
+
+// Defense in depth after structured validation: ongoing/future organizational
+// actions require explicit wording in the cited source evidence, not inference.
+export function requireExplicitActions(
+  draft: ReturnType<typeof validateDraft>,
+  context: LiveContext,
+) {
+  const actions = [
+    "monitor",
+    "work on",
+    "working on",
+    "continue to",
+    "refund",
+    "credit",
+    "compensat",
+    "promise",
+    "we will",
+    "we'll",
+    "we’ll",
+    "we are aware",
+    "we’re aware",
+    "our tracking",
+    "we managed",
+    "we have",
+    "we've",
+    "we’ve",
+    "we identified",
+    "our ",
+  ];
+  for (const sentence of draft.sentences) {
+    const evidence = context.facts
+      .filter((fact) => sentence.factIds.includes(fact.id))
+      .flatMap((fact) => fact.evidence.map((e) => e.quote.toLowerCase()))
+      .join("\n");
+    for (const action of actions) {
+      if (
+        ` ${sentence.text.toLowerCase()}`.includes(` ${action}`) &&
+        !` ${evidence.replaceAll("\n", " ")}`.includes(` ${action}`)
+      )
+        throw new GroundingError(
+          `Unsubstantiated organizational action (${action}); use neutral factual wording without unsupported monitoring, work, ownership or commitment claims`,
+        );
+    }
+  }
 }

@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "GHOST Browser Reality",
+  "version": "0.1.0",
+  "minimum_chrome_version": "116",
+  "description": "Grounded context across the visible Gmail thread and demo GitHub issue.",
+  "permissions": ["sidePanel"],
+  "action": { "default_title": "Open GHOST" },
+  "background": { "service_worker": "worker.js" },
+  "side_panel": { "default_path": "panel.html" },
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'; frame-src http://127.0.0.1:3000" },
+  "content_scripts": [{
+    "matches": ["https://mail.google.com/mail/u/*", "https://github.com/NassAbd/ghost-demo-workspace/issues/*"],
+    "js": ["parser.js", "content.js"],
+    "run_at": "document_idle"
+  }]
+}

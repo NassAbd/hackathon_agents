@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { Agent, Runner } from "@openai/agents";
 import {
-  LiveContextSchema,
+  liveContextSchemaForSources,
   LiveDraftSchema,
   VerificationSchema,
   type LiveContext,
@@ -12,6 +13,7 @@ import {
   requireVerification,
   validateContext,
   validateDraft,
+  requireExplicitActions,
   type Source,
 } from "./live-context";
 import type { GhostEvent } from "./schemas";
@@ -23,15 +25,60 @@ VERIFY: Independently audit the supplied candidate against sources. Return one b
 const runner = new Runner({ tracingDisabled: true });
 export type LiveTask = "extract" | "draft" | "verify";
 export type Invoke = (task: LiveTask, input: unknown) => Promise<unknown>;
-export function openAIInvoke(signal: AbortSignal): Invoke {
+export function openAIInvoke(signal: AbortSignal, logOutput = true): Invoke {
   return async (task, input) => {
+    const incremental = !!(
+      input &&
+      typeof input === "object" &&
+      "incremental" in input &&
+      input.incremental === true
+    );
+    const observed =
+      task === "extract"
+        ? z
+            .object({
+              sources: z
+                .array(z.object({ id: z.string(), content: z.string() }))
+                .min(1),
+            })
+            .parse(input).sources
+        : [];
+    const quoteChoices = incremental
+      ? [
+          ...new Set(
+            observed.flatMap((source) =>
+              source.content.split(/(?<=[.!?])\s+|\n+/).flatMap((line) => {
+                const chunks: string[] = [];
+                for (let offset = 0; offset < line.length; offset += 1200) {
+                  const chunk = line.slice(offset, offset + 1200).trim();
+                  if (chunk.length >= 3) chunks.push(chunk);
+                }
+                return chunks;
+              }),
+            ),
+          ),
+        ]
+      : undefined;
     const agent = new Agent({
       name: "GHOST",
-      instructions,
+      instructions:
+        instructions +
+        (input &&
+        typeof input === "object" &&
+        "incremental" in input &&
+        input.incremental === true
+          ? "\nBROWSER INCREMENTAL MODE overrides accumulated extraction: return only records grounded in the SINGLE new source. Previous context is for intent and ID continuity only. Do not copy earlier evidence or earlier facts into the delta. Reuse exact entity IDs/labels/types only for identical concepts; use unique source-specific fact and relationship IDs. Every quote must be selected from the schema's exact allowed evidence excerpts. Only author facts entailed by those excerpts. Include only 3-5 essential facts and 3-5 entities; no incidental information. The output intent must express the concrete goal given the LATEST operational status: distinguish explaining restoration from explaining an ongoing issue or uncertain resolution. Avoid generic labels such as responding to an inquiry when source evidence supports a more specific goal. Infer the wording yourself from previous plus new context, citing new fact IDs."
+          : "") +
+        (input && typeof input === "object" && "browserDraft" in input
+          ? "\nBROWSER DRAFT STYLE: Write directly to the customer using neutral, evidence-backed factual statements. Do not use first-person plural we/our/us or claim ownership of work. Say A fix was deployed when supported; do not say We deployed a fix. Greetings and closings must be purely social with no claims of managing, working, investigating, or monitoring. Never append as we... to a thank-you. The customer's email is an earlier report; the latest incident findings establish the current operational status. If correction is present, remove the precise unsupported action phrase rather than paraphrasing the same unsupported claim."
+          : ""),
       model: process.env.OPENAI_MODEL || process.env.MODEL || "gpt-4.1-mini",
       outputType:
         task === "extract"
-          ? LiveContextSchema
+          ? liveContextSchemaForSources(
+              observed.map((s) => s.id),
+              quoteChoices,
+            )
           : task === "draft"
             ? LiveDraftSchema
             : VerificationSchema,
@@ -42,7 +89,7 @@ export function openAIInvoke(signal: AbortSignal): Invoke {
       JSON.stringify({ task: task.toUpperCase(), input }),
       { maxTurns: 1, signal },
     );
-    if (process.env.NODE_ENV === "development")
+    if (logOutput && process.env.NODE_ENV === "development")
       console.info("GHOST structured output", {
         task,
         output: result.finalOutput,
@@ -126,4 +173,217 @@ export async function runLive({
     }
   }
   throw new GroundingError("No verified output");
+}
+
+// Browser observations share the agent, schemas, semantic verifier and graph adapter.
+// Only the new source is extracted; accepted historical records are not re-extracted.
+export async function runIncremental({
+  source,
+  sources,
+  previous,
+  events,
+  invoke,
+  timing,
+}: {
+  source: Source;
+  sources: Source[];
+  previous?: LiveContext;
+  events: GhostEvent[];
+  invoke: Invoke;
+  timing: (stage: string, ms: number) => void;
+}) {
+  let delta: LiveContext | undefined;
+  let correction: string | null = null;
+  let extractionMs = 0;
+  let verificationMs = 0;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      let start = performance.now();
+      const raw = await invoke("extract", {
+        incremental: true,
+        sources: [source],
+        previous: previous
+          ? {
+              intent: previous.intent,
+              facts: previous.facts.map((f) => ({
+                text: f.text,
+                customerSafe: f.customerSafe,
+              })),
+              entities: previous.entities.map((e) => ({
+                label: e.label,
+                type: e.type,
+              })),
+            }
+          : null,
+        events,
+        correction,
+      });
+      extractionMs += performance.now() - start;
+      timing("model extraction", extractionMs);
+      const candidate = validateContext(raw, [source]);
+      start = performance.now();
+      const expectedCheckIds = contextCheckIds(candidate);
+      const verification = await invoke("verify", {
+        sources: [source],
+        context: candidate,
+        previous: previous ?? null,
+        events,
+        expectedCheckIds,
+      });
+      verificationMs += performance.now() - start;
+      timing("verification", verificationMs);
+      requireVerification(verification, expectedCheckIds);
+      delta = candidate;
+      break;
+    } catch (error) {
+      if (
+        attempt === 1 ||
+        (!(error instanceof GroundingError) && !(error instanceof z.ZodError))
+      )
+        throw error;
+      correction =
+        error instanceof GroundingError
+          ? error.message
+          : "Structured schema failed";
+    }
+  }
+  if (!delta) throw new GroundingError("No verified incremental output");
+  const start = performance.now();
+  // On a changed page, retire its earlier evidence rather than retaining stale claims.
+  const retainedFacts = (previous?.facts ?? []).filter(
+    (f) => !f.evidence.some((e) => e.sourceId === source.id),
+  );
+  const retainedEntities = (previous?.entities ?? [])
+    .map((entity) => ({
+      ...entity,
+      evidence: entity.evidence.filter((e) => e.sourceId !== source.id),
+    }))
+    .filter((entity) => entity.evidence.length > 0);
+  const merge = <T extends { id: string }>(old: T[], added: T[]) => [
+    ...new Map([...old, ...added].map((v) => [v.id, v])).values(),
+  ];
+  // Model IDs are local to an extraction. Namespace them before merging, and
+  // join only identical model-authored entity labels/types across pages.
+  const prefix = createHash("sha256")
+    .update(source.id)
+    .digest("hex")
+    .slice(0, 10);
+  const localId = (kind: string, id: string) =>
+    `${prefix}_${kind}_${createHash("sha256").update(id).digest("hex").slice(0, 16)}`;
+  const key = (entity: LiveContext["entities"][number]) =>
+    `${entity.type.trim().toLowerCase()}:${entity.label.trim().toLowerCase()}`;
+  const entityMap = new Map(
+    delta.entities.map((entity) => [
+      entity.id,
+      retainedEntities.find((old) => key(old) === key(entity))?.id ??
+        localId("e", entity.id),
+    ]),
+  );
+  const factMap = new Map(
+    delta.facts.map((fact) => [fact.id, localId("f", fact.id)]),
+  );
+  const combinedEntities = delta.entities.map((entity) => {
+    const id = entityMap.get(entity.id)!;
+    const existing = retainedEntities.find((old) => old.id === id);
+    const evidence = [
+      ...new Map(
+        [...(existing?.evidence ?? []), ...entity.evidence].map((e) => [
+          JSON.stringify(e),
+          e,
+        ]),
+      ).values(),
+    ];
+    return { ...entity, id, evidence: evidence.slice(-4) };
+  });
+  delta = {
+    entities: combinedEntities,
+    facts: delta.facts.map((fact) => ({
+      ...fact,
+      id: factMap.get(fact.id)!,
+      entityIds: fact.entityIds.map((id) => entityMap.get(id)!),
+    })),
+    relationships: delta.relationships.map((edge) => ({
+      ...edge,
+      id: localId("r", edge.id),
+      source: entityMap.get(edge.source)!,
+      target: entityMap.get(edge.target)!,
+      factIds: edge.factIds.map((id) => factMap.get(id)!),
+    })),
+    intent: {
+      ...delta.intent,
+      evidenceIds: delta.intent.evidenceIds.map((id) => factMap.get(id)!),
+    },
+  };
+  const entities = merge(retainedEntities, delta.entities);
+  const entityIds = new Set(entities.map((e) => e.id));
+  const facts = merge(retainedFacts, delta.facts).filter((f) =>
+    f.entityIds.every((id) => entityIds.has(id)),
+  );
+  const factIds = new Set(facts.map((f) => f.id));
+  const relationships = merge(
+    previous?.relationships ?? [],
+    delta.relationships,
+  ).filter(
+    (r) =>
+      entityIds.has(r.source) &&
+      entityIds.has(r.target) &&
+      r.factIds.every((id) => factIds.has(id)),
+  );
+  const context = validateContext(
+    { entities, facts, relationships, intent: delta.intent },
+    sources,
+  );
+  timing("graph merge", performance.now() - start);
+  timing("intent update", 0); // Inferred inside the extraction call, not a second model call.
+  return context;
+}
+
+export async function runGroundedDraft(
+  context: LiveContext,
+  invoke: Invoke,
+  timing: (stage: string, ms: number) => void,
+) {
+  let correction: string | null = null;
+  let rejected: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      let start = performance.now();
+      const raw = await invoke("draft", {
+        browserDraft: true,
+        facts: context.facts.filter((f) => f.customerSafe),
+        correction,
+        rejected,
+        instruction:
+          "Address the customer directly. Give only established findings. Treat the customer email as an earlier report, and the latest incident source as the current operational status. Do not restate superseded customer reports as current failures after a verified fix. Use neutral factual wording rather than claiming what we or our organization have done. Do not claim that we are working, tracking or monitoring, and do not add future actions or commitments unless the cited source explicitly establishes them. A neutral thank-you needs no added explanation of ongoing work.",
+      });
+      rejected = raw;
+      timing("draft generation", performance.now() - start);
+      const draft = validateDraft(raw, context);
+      requireExplicitActions(draft, context);
+      timing("draft generation", performance.now() - start);
+      start = performance.now();
+      const expectedCheckIds = draft.sentences.map((_, i) => `sentence:${i}`);
+      requireVerification(
+        await invoke("verify", {
+          context: { facts: context.facts.filter((f) => f.customerSafe) },
+          draft,
+          expectedCheckIds,
+        }),
+        expectedCheckIds,
+      );
+      timing("verification", performance.now() - start);
+      return draft;
+    } catch (error) {
+      if (
+        attempt === 1 ||
+        (!(error instanceof GroundingError) && !(error instanceof z.ZodError))
+      )
+        throw error;
+      correction =
+        error instanceof GroundingError
+          ? error.message
+          : "Structured schema failed";
+    }
+  }
+  throw new GroundingError("No verified draft");
 }
